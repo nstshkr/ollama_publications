@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Мои заметки{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+  <div class="row">
+    <!-- Форма добавления заметки -->
+    <div class="col-lg-4 mb-4">
+      <div class="card border-0 shadow-sm sticky-top" style="top: 20px;">
+        <div class="card-body p-4">
+          <h4 class="fw-bold mb-3">Новая заметка</h4>
+          <textarea id="note-input" class="form-control mb-3" rows="5" placeholder="Запишите свою мысль..."></textarea>
+          <button id="add-note-btn" class="btn btn-primary w-100 rounded-pill">
+            <i class="bi bi-plus-lg me-1"></i>Добавить
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Список заметок -->
+    <div class="col-lg-8">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="fw-bold mb-0">Сохраненные заметки</h4>
+        <button id="create-post-btn" class="btn btn-success rounded-pill shadow-sm" disabled>
+          <i class="bi bi-send me-1"></i>Создать пост из выбранных
+        </button>
+      </div>
+      <div id="notes-list" class="row g-3">
+        <!-- Заметки будут вставляться здесь через JS -->
+      </div>
+      <div id="empty-notes" class="text-center py-5 d-none text-muted">
+        <i class="bi bi-journal-x display-4"></i>
+        <p class="mt-3">У вас пока нет заметок.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/notes.js') }}"></script>
+{% endblock %}
