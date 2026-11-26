@@ -1,42 +1,338 @@
 let notes = JSON.parse(localStorage.getItem('my_notes')) || [];
+let folders = JSON.parse(localStorage.getItem('my_folders')) || [];
+let currentFolder = null; // null = Все, 'none' = Без папки, id = конкретная папка
+let selectedNotes = new Set();
+let selectedColor = 'bg-white';
 
-const noteInput = document.getElementById('note-input');
-const addNoteBtn = document.getElementById('add-note-btn');
-const notesList = document.getElementById('notes-list');
-const emptyNotes = document.getElementById('empty-notes');
-const createPostBtn = document.getElementById('create-post-btn');
+const grid = document.getElementById('notes-grid');
+const emptyState = document.getElementById('empty-notes');
+const actionBar = document.getElementById('floating-action-bar');
+const selectedCount = document.getElementById('selected-count');
+const folderTitle = document.getElementById('current-folder-title');
+const publishAllBtn = document.getElementById('publish-all-btn');
 
+const ollamaModal = new bootstrap.Modal(document.getElementById('ollamaModal'));
+const noteModal = new bootstrap.Modal(document.getElementById('createNoteModal'));
+const folderModal = new bootstrap.Modal(document.getElementById('createFolderModal'));
+const confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
+
+let confirmCallback = null; // Функция, которая вызовется при подтверждении
+
+// --- КРАСИВОЕ ПОДТВЕРЖДЕНИЕ ---
+function showConfirm(title, text, callback) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-text').textContent = text;
+  confirmCallback = callback;
+  confirmModal.show();
+}
+
+document.getElementById('confirm-yes-btn').addEventListener('click', () => {
+  if (confirmCallback) confirmCallback();
+  confirmModal.hide();
+});
+
+// --- РЕНДЕР ПАПОК ---
+function renderFolders() {
+  const list = document.getElementById('sidebar-folders');
+  
+  const isAllActive = currentFolder === null;
+  const isNoneActive = currentFolder === 'none';
+  
+  list.innerHTML = `
+    <button class="list-group-item list-group-item-action ${isAllActive ? 'active' : ''}" onclick="setFolder(null, 'Все заметки')">
+      <i class="bi bi-collection me-2"></i>Все заметки
+    </button>
+    <button class="list-group-item list-group-item-action ${isNoneActive ? 'active' : ''}" onclick="setFolder('none', 'Без папки')">
+      <i class="bi bi-folder me-2"></i>Без папки
+    </button>
+  `;
+
+  folders.forEach(f => {
+    const isActive = currentFolder === f.id;
+    list.innerHTML += `
+      <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center ${isActive ? 'active' : ''}" onclick="setFolder(${f.id}, '${escapeHtml(f.name)}')">
+        <span><i class="bi bi-folder-fill me-2 ${isActive ? 'text-white' : 'text-warning'}"></i>${escapeHtml(f.name)}</span>
+        <i class="bi bi-x-circle ${isActive ? 'text-white' : 'text-danger'} opacity-75" onclick="deleteFolder(${f.id}, event)" title="Удалить папку"></i>
+      </div>
+    `;
+  });
+
+  list.innerHTML += `
+    <button class="list-group-item list-group-item-action text-primary fw-medium" onclick="openFolderModal()">
+      <i class="bi bi-folder-plus me-2"></i>Создать папку
+    </button>
+  `;
+}
+
+window.openFolderModal = function() {
+  document.getElementById('new-folder-name').value = '';
+  folderModal.show();
+};
+
+window.createFolder = function() {
+  const name = document.getElementById('new-folder-name').value.trim();
+  if (!name) return;
+  folders.push({ id: Date.now(), name });
+  localStorage.setItem('my_folders', JSON.stringify(folders));
+  folderModal.hide();
+  renderFolders();
+};
+
+window.deleteFolder = function(id, event) {
+  event.stopPropagation();
+  showConfirm('Удалить папку?', 'Заметки из неё переместятся в "Без папки".', () => {
+    folders = folders.filter(f => f.id !== id);
+    notes.forEach(n => { if (n.folderId === id) n.folderId = 'none'; });
+    localStorage.setItem('my_folders', JSON.stringify(folders));
+    localStorage.setItem('my_notes', JSON.stringify(notes));
+    if (currentFolder === id) setFolder(null, 'Все заметки');
+    renderFolders();
+    renderNotes();
+  });
+};
+
+window.setFolder = function(id, name) {
+  currentFolder = id;
+  folderTitle.textContent = name;
+  selectedNotes.clear();
+  updateActionBar();
+  renderFolders();
+  renderNotes();
+  
+  if (id !== null && notes.some(n => n.folderId === id)) {
+    publishAllBtn.classList.remove('d-none');
+  } else {
+    publishAllBtn.classList.add('d-none');
+  }
+};
+
+// --- РЕНДЕР ЗАМЕТОК ---
 function renderNotes() {
-  notesList.innerHTML = '';
-  if (notes.length === 0) {
-    emptyNotes.classList.remove('d-none');
+  grid.innerHTML = '';
+  
+  let filteredNotes = notes;
+  if (currentFolder === 'none') {
+    filteredNotes = notes.filter(n => !n.folderId || n.folderId === 'none');
+  } else if (currentFolder !== null) {
+    filteredNotes = notes.filter(n => n.folderId === currentFolder);
+  }
+
+  if (filteredNotes.length === 0) {
+    emptyState.classList.remove('d-none');
     return;
   }
-  emptyNotes.classList.add('d-none');
+  emptyState.classList.add('d-none');
 
-  notes.forEach((note, index) => {
-    const date = new Date(note.id).toLocaleString('ru-RU');
+  filteredNotes.forEach((note) => {
+    const isSelected = selectedNotes.has(note.id);
+    const date = new Date(note.id).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+    const bgColor = note.color || 'bg-white';
+    
+    const folderOptions = folders.map(f => `<li><a class="dropdown-item small" href="#" onclick="moveToFolder(${note.id}, ${f.id}, event)">${escapeHtml(f.name)}</a></li>`).join('');
+    const moveDropdown = `
+      <div class="dropdown position-absolute top-0 end-0 mt-1 me-2" onclick="event.stopPropagation()">
+        <button class="btn btn-sm text-muted" data-bs-toggle="dropdown"><i class="bi bi-folder-symlink"></i></button>
+        <ul class="dropdown-menu dropdown-menu-end shadow-sm border-0">
+          <li><h6 class="dropdown-header">Переместить в:</h6></li>
+          ${folderOptions}
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item small text-muted" href="#" onclick="moveToFolder(${note.id}, 'none', event)">Без папки</a></li>
+        </ul>
+      </div>
+    `;
+
     const card = `
-      <div class="col-md-6">
-        <div class="card h-100 border-0 shadow-sm note-card">
-          <div class="card-body">
-            <div class="form-check mb-2">
-              <input class="form-check-input note-checkbox" type="checkbox" value="${index}" id="note-${index}">
-              <label class="form-check-label text-muted small" for="note-${index}">${date}</label>
+      <div class="col-md-6 col-xl-4">
+        <div class="card h-100 border ${isSelected ? 'border-primary shadow-lg' : 'border-light shadow-sm'} ${bgColor} rounded-3 position-relative note-card" style="transition: 0.2s;">
+          
+          <!-- Чекбокс для выбора (слева вверху) -->
+          <div class="position-absolute top-0 start-0 m-3" onclick="event.stopPropagation()">
+            <input class="form-check-input fs-5 mt-0 shadow-sm cursor-pointer" type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect(${note.id})">
+          </div>
+
+          <!-- Меню перемещения (справа вверху) -->
+          ${moveDropdown}
+
+          <!-- Клик по этой области открывает редактирование -->
+          <div class="card-body p-3 pt-5" onclick="openEditModal(${note.id})" style="cursor: pointer;">
+            <p class="card-text mb-3" style="white-space: pre-wrap;">${escapeHtml(note.text)}</p>
+            <div class="d-flex justify-content-between align-items-center mt-auto pt-2 border-top border-dark-subtle">
+              <span class="text-muted" style="font-size: 0.75rem;">${date}</span>
+              <button class="btn btn-sm text-danger p-0 delete-btn" onclick="deleteNote(${note.id}, event)">
+                <i class="bi bi-trash"></i>
+              </button>
             </div>
-            <p class="card-text" style="white-space: pre-wrap;">${escapeHtml(note.text)}</p>
-            <button class="btn btn-sm btn-outline-danger border-0 position-absolute bottom-0 end-0 m-2 delete-btn" data-index="${index}">
-              <i class="bi bi-trash"></i>
-            </button>
           </div>
         </div>
       </div>
     `;
-    notesList.insertAdjacentHTML('beforeend', card);
+    grid.insertAdjacentHTML('beforeend', card);
   });
-
-  updatePostBtnState();
 }
+
+window.moveToFolder = function(noteId, folderId, event) {
+  event.stopPropagation();
+  const note = notes.find(n => n.id === noteId);
+  if (note) {
+    note.folderId = folderId;
+    localStorage.setItem('my_notes', JSON.stringify(notes));
+    renderNotes();
+  }
+};
+
+window.toggleSelect = function(id) {
+  if (selectedNotes.has(id)) selectedNotes.delete(id);
+  else selectedNotes.add(id);
+  updateActionBar();
+  renderNotes();
+};
+
+window.deleteNote = function(id, event) {
+  event.stopPropagation();
+  showConfirm('Удалить заметку?', 'Она исчезнет навсегда.', () => {
+    notes = notes.filter(n => n.id !== id);
+    selectedNotes.delete(id);
+    localStorage.setItem('my_notes', JSON.stringify(notes));
+    updateActionBar();
+    renderNotes();
+  });
+};
+
+function updateActionBar() {
+  if (selectedNotes.size > 0) {
+    actionBar.classList.remove('d-none');
+    actionBar.classList.add('d-flex');
+    selectedCount.textContent = selectedNotes.size;
+  } else {
+    actionBar.classList.add('d-none');
+    actionBar.classList.remove('d-flex');
+  }
+}
+
+// --- ВЫБОР ЦВЕТА ---
+window.selectColor = function(el) {
+  document.querySelectorAll('.color-option').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedColor = el.dataset.color;
+};
+
+// --- СОЗДАНИЕ И РЕДАКТИРОВАНИЕ ЗАМЕТКИ ---
+window.openCreateModal = function() {
+  document.getElementById('noteModalTitle').textContent = 'Новая заметка';
+  document.getElementById('edit-note-id').value = '';
+  document.getElementById('new-note-text').value = '';
+  resetColorPicker('bg-white');
+  noteModal.show();
+};
+
+window.openEditModal = function(id) {
+  const note = notes.find(n => n.id === id);
+  if (!note) return;
+  
+  document.getElementById('noteModalTitle').textContent = 'Редактировать заметку';
+  document.getElementById('edit-note-id').value = note.id;
+  document.getElementById('new-note-text').value = note.text;
+  resetColorPicker(note.color || 'bg-white');
+  noteModal.show();
+};
+
+function resetColorPicker(color) {
+  document.querySelectorAll('.color-option').forEach(c => c.classList.remove('selected'));
+  const colorEl = document.querySelector(`.color-option[data-color="${color}"]`);
+  if (colorEl) colorEl.classList.add('selected');
+  selectedColor = color;
+}
+
+document.getElementById('save-note-btn').addEventListener('click', () => {
+  const text = document.getElementById('new-note-text').value.trim();
+  const editId = document.getElementById('edit-note-id').value;
+  if (!text) return;
+
+  if (editId) {
+    // Редактирование существующей
+    const note = notes.find(n => n.id == editId);
+    if (note) {
+      note.text = text;
+      note.color = selectedColor;
+    }
+  } else {
+    // Создание новой
+    notes.unshift({ 
+      id: Date.now(), 
+      text: text, 
+      color: selectedColor,
+      folderId: currentFolder === null ? 'none' : currentFolder 
+    });
+  }
+  
+  localStorage.setItem('my_notes', JSON.stringify(notes));
+  noteModal.hide();
+  renderNotes();
+  if(currentFolder !== null) setFolder(currentFolder, folderTitle.textContent);
+});
+
+
+// --- ГЕНЕРАЦИЯ ПОСТА (ЭМУЛЯЦИЯ OLLAMA) ---
+let notesToGenerate = [];
+
+window.preparePostGeneration = function() {
+  notesToGenerate = notes.filter(n => selectedNotes.has(n.id));
+  startGeneration();
+};
+
+window.generatePostsFromCurrentFolder = function() {
+  if (currentFolder === 'none') {
+    notesToGenerate = notes.filter(n => !n.folderId || n.folderId === 'none');
+  } else {
+    notesToGenerate = notes.filter(n => n.folderId === currentFolder);
+  }
+  if (notesToGenerate.length === 0) return;
+  startGeneration();
+};
+
+function startGeneration() {
+  document.getElementById('ollama-loading').classList.remove('d-none');
+  document.getElementById('ollama-result').classList.add('d-none');
+  ollamaModal.show();
+
+  setTimeout(() => {
+    const combinedText = notesToGenerate.map(n => n.text).join('. ');
+    document.getElementById('post-title').value = "Новый пост от " + new Date().toLocaleDateString();
+    document.getElementById('post-content').value = combinedText;
+    
+    document.getElementById('ollama-loading').classList.add('d-none');
+    document.getElementById('ollama-result').classList.remove('d-none');
+  }, 2000);
+}
+
+window.cancelPost = function() {
+  notesToGenerate = [];
+  ollamaModal.hide();
+};
+
+document.getElementById('publish-post-btn').addEventListener('click', () => {
+  const title = document.getElementById('post-title').value.trim() || 'Без названия';
+  const content = document.getElementById('post-content').value.trim();
+  
+  const posts = JSON.parse(localStorage.getItem('my_posts')) || [];
+  posts.unshift({ id: Date.now(), title, content, date: new Date().toISOString() });
+  localStorage.setItem('my_posts', JSON.stringify(posts));
+
+  selectedNotes.clear();
+  updateActionBar();
+  renderNotes();
+  ollamaModal.hide();
+  
+  const toastContainer = document.getElementById('toastContainer');
+  toastContainer.innerHTML = `
+    <div class="toast align-items-center text-white bg-success border-0 shadow show" role="alert">
+      <div class="d-flex">
+        <div class="toast-body fw-medium"><i class="bi bi-check-circle me-1"></i> Пост опубликован!</div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => toastContainer.innerHTML = '', 3000);
+});
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -44,53 +340,6 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// Добавление заметки
-addNoteBtn.addEventListener('click', () => {
-  const text = noteInput.value.trim();
-  if (!text) return;
-  notes.unshift({ id: Date.now(), text: text });
-  localStorage.setItem('my_notes', JSON.stringify(notes));
-  noteInput.value = '';
-  renderNotes();
-});
-
-// Удаление заметки
-notesList.addEventListener('click', (e) => {
-  const btn = e.target.closest('.delete-btn');
-  if (btn) {
-    const index = btn.dataset.index;
-    notes.splice(index, 1);
-    localStorage.setItem('my_notes', JSON.stringify(notes));
-    renderNotes();
-  }
-});
-
-// Активация кнопки "Создать пост"
-function updatePostBtnState() {
-  const checked = document.querySelectorAll('.note-checkbox:checked');
-  createPostBtn.disabled = checked.length === 0;
-}
-
-notesList.addEventListener('change', (e) => {
-  if (e.target.classList.contains('note-checkbox')) {
-    updatePostBtnState();
-  }
-});
-
-// Имитация отправки поста (пока бэкенда нет)
-createPostBtn.addEventListener('click', () => {
-  const checked = document.querySelectorAll('.note-checkbox:checked');
-  let combinedText = [];
-  checked.forEach(cb => {
-    combinedText.push(notes[cb.value].text);
-  });
-  
-  // Здесь позже будет отправка на сервер
-  showToast(`Пост создан! Объединено заметок: ${combinedText.length}`, 'success');
-  
-  // Снимаем выделение
-  checked.forEach(cb => cb.checked = false);
-  updatePostBtnState();
-});
-
+// Инициализация
+renderFolders();
 renderNotes();

@@ -2,36 +2,143 @@
 {% block title %}Мои заметки{% endblock %}
 
 {% block content %}
-<div class="container py-5">
-  <div class="row">
-    <!-- Форма добавления заметки -->
-    <div class="col-lg-4 mb-4">
-      <div class="card border-0 shadow-sm sticky-top" style="top: 20px;">
-        <div class="card-body p-4">
-          <h4 class="fw-bold mb-3">Новая заметка</h4>
-          <textarea id="note-input" class="form-control mb-3" rows="5" placeholder="Запишите свою мысль..."></textarea>
-          <button id="add-note-btn" class="btn btn-primary w-100 rounded-pill">
-            <i class="bi bi-plus-lg me-1"></i>Добавить
-          </button>
+<div class="row mt-2">
+  <!-- ЛЕВАЯ ПАНЕЛЬ: ПАПКИ -->
+  <div class="col-md-3 col-lg-2 mb-4">
+    <button class="btn btn-primary w-100 rounded-pill shadow-sm mb-3" onclick="openCreateModal()">
+      <i class="bi bi-plus-lg me-1"></i> Заметка
+    </button>
+    
+    <div class="list-group list-group-flush shadow-sm rounded-3 overflow-hidden" id="sidebar-folders">
+      <!-- Кнопки будут рендериться через JS, чтобы управлять классом active -->
+    </div>
+  </div>
+
+  <!-- ПРАВАЯ ПАНЕЛЬ: ЗАМЕТКИ -->
+  <div class="col-md-9 col-lg-10">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="fw-bold mb-0" id="current-folder-title">Все заметки</h2>
+      <button id="publish-all-btn" class="btn btn-success rounded-pill shadow-sm d-none" onclick="generatePostsFromCurrentFolder()">
+        <i class="bi bi-magic me-1"></i>Сгенерировать пост из всех
+      </button>
+    </div>
+
+    <div id="notes-grid" class="row g-3"></div>
+    
+    <div id="empty-notes" class="text-center py-5 d-none text-muted">
+      <i class="bi bi-journal-x display-4 opacity-50"></i>
+      <p class="mt-3">В этой папке пока нет заметок.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Плавающая панель -->
+<div id="floating-action-bar" class="position-fixed bottom-0 start-50 translate-middle-x mb-4 bg-dark text-white rounded-pill shadow-lg px-4 py-2 d-none align-items-center gap-3" style="z-index: 1050;">
+  <span>Выбрано: <b id="selected-count">0</b></span>
+  <button id="create-post-btn" class="btn btn-sm btn-primary rounded-pill px-3" onclick="preparePostGeneration()">
+    <i class="bi bi-stars me-1"></i>Сгенерировать
+  </button>
+</div>
+
+<!-- МОДАЛКА: Создание/Редактирование заметки -->
+<div class="modal fade" id="createNoteModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold" id="noteModalTitle">Новая заметка</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-note-id">
+        <textarea id="new-note-text" class="form-control border-0 bg-light mb-3" rows="5" placeholder="Запишите свою мысль..." style="resize: none;"></textarea>
+        
+        <!-- Выбор цвета -->
+        <div class="mb-3">
+          <label class="form-label text-muted small">Цвет фона</label>
+          <div class="d-flex gap-2" id="color-picker">
+            <div class="color-option bg-white border" data-color="bg-white" onclick="selectColor(this)"></div>
+            <div class="color-option bg-warning-subtle" data-color="bg-warning-subtle" onclick="selectColor(this)"></div>
+            <div class="color-option bg-info-subtle" data-color="bg-info-subtle" onclick="selectColor(this)"></div>
+            <div class="color-option bg-success-subtle" data-color="bg-success-subtle" onclick="selectColor(this)"></div>
+            <div class="color-option bg-danger-subtle" data-color="bg-danger-subtle" onclick="selectColor(this)"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" id="save-note-btn" class="btn btn-primary rounded-pill px-4">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- МОДАЛКА: Создание папки -->
+<div class="modal fade" id="createFolderModal" tabindex="-1">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-body p-4 text-center">
+        <h5 class="fw-bold mb-3">Новая папка</h5>
+        <input type="text" id="new-folder-name" class="form-control mb-3" placeholder="Название...">
+        <button type="button" class="btn btn-primary w-100 rounded-pill" onclick="createFolder()">Создать</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- МОДАЛКА: Универсальное подтверждение удаления -->
+<div class="modal fade" id="confirmModal" tabindex="-1">
+  <div class="modal-dialog modal-sm modal-dialog-centered">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-body p-4 text-center">
+        <div class="text-danger mb-3">
+          <i class="bi bi-exclamation-circle display-4"></i>
+        </div>
+        <h5 class="fw-bold mb-2" id="confirm-title">Вы уверены?</h5>
+        <p class="text-muted small mb-4" id="confirm-text">Это действие нельзя отменить.</p>
+        <div class="d-flex justify-content-center gap-2">
+          <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" id="confirm-yes-btn" class="btn btn-danger rounded-pill px-4">Удалить</button>
         </div>
       </div>
     </div>
+  </div>
+</div>
 
-    <!-- Список заметок -->
-    <div class="col-lg-8">
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <h4 class="fw-bold mb-0">Сохраненные заметки</h4>
-        <button id="create-post-btn" class="btn btn-success rounded-pill shadow-sm" disabled>
-          <i class="bi bi-send me-1"></i>Создать пост из выбранных
-        </button>
+<!-- МОДАЛКА: Ожидание Ollama и Редактирование поста -->
+<div class="modal fade" id="ollamaModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content border-0 shadow">
+      
+      <div id="ollama-loading" class="modal-body text-center py-5">
+        <div class="spinner-grow text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+        <h4 class="fw-bold">Ollama анализирует заметки...</h4>
+        <p class="text-muted">Составляем связный текст. Пожалуйста, подождите.</p>
       </div>
-      <div id="notes-list" class="row g-3">
-        <!-- Заметки будут вставляться здесь через JS -->
+
+      <div id="ollama-result" class="d-none">
+        <div class="modal-header border-0 pb-0">
+          <h5 class="modal-title fw-bold">Ваш пост готов!</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" onclick="cancelPost()"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-info py-2"><i class="bi bi-info-circle me-2"></i>Текст сгенерирован ИИ. Вы можете отредактировать его перед публикацией.</div>
+          <div class="mb-3">
+            <label class="form-label text-muted small">Заголовок</label>
+            <input type="text" id="post-title" class="form-control fw-bold" placeholder="О чем этот пост?">
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-muted small">Текст поста</label>
+            <textarea id="post-content" class="form-control" rows="8"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal" onclick="cancelPost()">Отмена</button>
+          <button type="button" id="publish-post-btn" class="btn btn-success rounded-pill px-4">
+            <i class="bi bi-send me-1"></i>Опубликовать
+          </button>
+        </div>
       </div>
-      <div id="empty-notes" class="text-center py-5 d-none text-muted">
-        <i class="bi bi-journal-x display-4"></i>
-        <p class="mt-3">У вас пока нет заметок.</p>
-      </div>
+
     </div>
   </div>
 </div>

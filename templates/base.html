@@ -37,10 +37,15 @@
           <i class="bi bi-bell me-2"></i> Напоминания
         </a>
       </li>
+      <li class="nav-item">
+        <a href="/posts" class="nav-link {% if request.path == '/posts' %}active{% endif %}">
+          <i class="bi bi-send me-2"></i> Мои посты
+        </a>
+      </li>
     </ul>
     
     <div class="mt-auto text-muted small px-2">
-      <i class="bi bi-info-circle me-1"></i> Версия 2.0
+      <i class="bi bi-info-circle me-1"></i> Версия 2.1
     </div>
   </aside>
 

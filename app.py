@@ -180,6 +180,9 @@ def notes():
 @app.route("/reminders")
 def reminders():
     return render_template("reminders.html")
+@app.route("/posts")
+def posts():
+    return render_template("posts.html")
 
 
 if __name__ == "__main__":
