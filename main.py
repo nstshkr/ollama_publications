@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import hashlib
@@ -40,6 +40,7 @@ ARTICLE_CHUNK_OVERLAP = 250
 KEYWORD_MERGE_GROUP_SIZE = 5
 MAX_ANNOTATION_CHARS = 150000
 SCHEMA_VERSION = "5"
+UNKNOWN = "Неизвестно"
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,28 @@ def yandex_api(public_url: str, suffix: str = "", **params) -> dict:
     return data
 
 
+def configured_source() -> tuple[str, str, str | None]:
+    """Never silently import from the obsolete Google Sheet."""
+    mode = os.getenv("IMPORT_SOURCE", "yandex").strip().lower()
+    if mode == "yandex":
+        url = os.getenv("YANDEX_PUBLIC_URL", "").strip()
+        if not url:
+            raise ValueError("Не задан YANDEX_PUBLIC_URL. Укажите ссылку на публичную папку в .env рядом с main.py. Автоматический переход к Google Таблице отключён.")
+        validate_url(url)
+        if urlparse(url).hostname not in {"disk.yandex.ru", "yadi.sk", "disk.yandex.com"}:
+            raise ValueError("YANDEX_PUBLIC_URL должен вести на Яндекс Диск")
+        if urlparse(url).fragment:
+            raise ValueError("YANDEX_PUBLIC_URL должен вести на папку, без пути после #")
+        return "yandex:" + hashlib.sha256(url.encode()).hexdigest()[:24], "txt", url
+    if mode == "google":
+        url = os.getenv("GOOGLE_SHEET_URL", "").strip()
+        if not url:
+            raise ValueError("Для IMPORT_SOURCE=google явно укажите GOOGLE_SHEET_URL")
+        sheet_id, gid = parse_sheet_url(url, os.getenv("GOOGLE_SHEET_GID"))
+        return sheet_id, gid, None
+    raise ValueError("IMPORT_SOURCE должен быть yandex или google")
+
+
 def parse_annotation_txt(raw: str, name: str, source_url: str) -> SheetRow:
     """Read a labeled TXT while preserving the annotation text verbatim."""
     labels = {
@@ -148,6 +171,7 @@ def parse_annotation_txt(raw: str, name: str, source_url: str) -> SheetRow:
         "дата": "date", "дата аннотации": "date",
         "дата создания": "date", "дата написания": "date",
         "дата составления": "date", "название статьи": "article_title",
+        "тема": "article_title", "ссылка на аннотацию": "annotation_url",
     }
     fields = {}
     current = None
@@ -163,15 +187,14 @@ def parse_annotation_txt(raw: str, name: str, source_url: str) -> SheetRow:
             fields[current] += "\n" + line
         elif line.strip():
             raise ValueError(f"{name}: текст до первого поля — ожидаются метки «Автор:», «Дата:» и т. д.")
-    for key, label in (("article_url", "Ссылка"), ("annotation_text", "Аннотация"),
-                       ("annotation_author", "Автор")):
-        if not fields.get(key, "").strip():
-            raise ValueError(f"{name}: отсутствует поле «{label}»")
-    article_link = fields.get("article_file_url", "").strip() or fields["article_url"].strip()
+    if not fields.get("annotation_text", "").strip():
+        raise ValueError(f"{name}: отсутствует поле «Аннотация»")
+    article_url = fields.get("article_url", "").strip()
+    article_link = fields.get("article_file_url", "").strip() or article_url
     # Stable ID from the file's name: adding a file doesn't renumber old records.
     stable_id = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:7], "big")
-    return SheetRow(stable_id, source_url, fields["article_url"].strip(), article_link,
-                    fields.get("date", "").strip(), fields["annotation_author"].strip(),
+    return SheetRow(stable_id, fields.get("annotation_url", "").strip() or source_url, article_url, article_link,
+                    fields.get("date", "").strip(), fields.get("annotation_author", "").strip(),
                     fields["annotation_text"].strip(), fields.get("article_title", "").strip())
 
 
@@ -180,32 +203,59 @@ def yandex_record_id(name: str) -> int:
     return int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:7], "big")
 
 
-def read_yandex_txts(public_url: str, on_error=None) -> list[SheetRow]:
-    """Load a shared TXT or all TXT files from a shared folder."""
+def list_yandex_txts(public_url: str) -> tuple[bool, list[dict]]:
+    """Enumerate TXT files, including nested folders and all pages."""
     metadata = yandex_api(public_url)
     if metadata.get("type") == "file":
-        files = [metadata]
-    elif metadata.get("type") == "dir":
-        files = []
+        return False, [metadata] if str(metadata.get("name", "")).lower().endswith(".txt") else []
+    if metadata.get("type") != "dir":
+        raise ValueError("Ссылка Яндекс Диска должна вести на TXT или папку")
+    files = []
+    pending = [None]
+    visited = set()
+    while pending:
+        folder = pending.pop()
+        if folder in visited:
+            continue
+        visited.add(folder)
         offset = 0
         while True:
-            page = yandex_api(public_url, limit=100, offset=offset)
-            embedded = page.get("_embedded", {})
-            batch = embedded.get("items", [])
-            files.extend(item for item in batch if item.get("type") == "file" and
-                         str(item.get("name", "")).lower().endswith(".txt"))
+            args = {"path": folder} if folder else {}
+            page = yandex_api(public_url, limit=100, offset=offset, **args)
+            embedded = page.get("_embedded")
+            if not isinstance(embedded, dict) or not isinstance(embedded.get("items"), list):
+                raise ValueError("Яндекс Диск не вернул список файлов")
+            batch = embedded["items"]
+            for item in batch:
+                if item.get("type") == "dir" and item.get("path"):
+                    pending.append(item["path"])
+                elif item.get("type") == "file" and str(item.get("name", "")).lower().endswith(".txt"):
+                    files.append(item)
             offset += len(batch)
-            if not batch or offset >= embedded.get("total", offset):
+            total = embedded.get("total")
+            if not batch or (isinstance(total, int) and offset >= total):
                 break
-    else:
-        raise ValueError("Ссылка Яндекс Диска должна вести на TXT или папку")
+            if total is None and len(batch) < 100:
+                break
+    return True, files
+
+
+def read_yandex_txts(public_url: str, on_error=None) -> list[SheetRow]:
+    """Load a shared TXT or all TXT files from a shared folder."""
+    is_dir, files = list_yandex_txts(public_url)
+    LOGGER.info("Яндекс Диск: найдено TXT-файлов: %d", len(files))
     rows = []
     for item in files:
         name = str(item.get("name", ""))
         if not name.lower().endswith(".txt"):
             continue
+        path = item.get("path") if is_dir else None
+        # Preserve root IDs; nested files with equal names must be distinct.
+        identity = str(path).lstrip("/") if path else name
+        LOGGER.info("TXT: %s", identity)
         try:
-            path = item.get("path") if metadata.get("type") == "dir" else None
+            if is_dir and not path:
+                raise ValueError(f"Нет пути к TXT-файлу {name}")
             args = {"path": path} if path else {}
             info = yandex_api(public_url, "/download", **args)
             download_url = info.get("href")
@@ -219,11 +269,12 @@ def read_yandex_txts(public_url: str, on_error=None) -> list[SheetRow]:
             except UnicodeDecodeError as exc:
                 raise ValueError(f"{name}: сохрани TXT в кодировке UTF-8") from exc
             source = public_url + ("#" + quote(str(path)) if path else "")
-            rows.append(parse_annotation_txt(decoded, name, source))
+            # Keep the actual imported file, not a folder URL mentioned inside the TXT.
+            rows.append(replace(parse_annotation_txt(decoded, identity, source), annotation_url=source))
         except (RuntimeError, ValueError, PermissionError) as exc:
             if on_error is None:
                 raise
-            on_error(name, exc)
+            on_error(identity, exc)
     if not rows and not files:
         raise ValueError("На Яндекс Диске нет TXT-файлов")
     if len({row.number for row in rows}) != len(rows):
@@ -533,20 +584,21 @@ def arxiv_metadata(url: str) -> dict:
 
 
 def resolve_article_metadata(publication_url: str, article_text: str,
-                             expected_title: str = "") -> dict:
+                             expected_title: str = "", *, allow_partial: bool = False) -> dict:
     """Publisher site first; Crossref DOI fallback when the site blocks scripts."""
     title = None
     authors = []
     publisher_doi = None
     used = []
-    try:
-        info = publisher_metadata(publication_url)
-        title = info["topic"]
-        authors = info["article_authors"]
-        publisher_doi = info["doi"]
-        used.append("publisher")
-    except (RuntimeError, ValueError, PermissionError) as exc:
-        LOGGER.warning("Сайт издателя недоступен для автоматического чтения: %s", exc)
+    if publication_url:
+        try:
+            info = publisher_metadata(publication_url)
+            title = info["topic"]
+            authors = info["article_authors"]
+            publisher_doi = info["doi"]
+            used.append("publisher")
+        except (RuntimeError, ValueError, PermissionError) as exc:
+            LOGGER.warning("Сайт издателя недоступен для автоматического чтения: %s", exc)
     if not authors and urlparse(publication_url).hostname in {"arxiv.org", "www.arxiv.org"}:
         try:
             info = arxiv_metadata(publication_url)
@@ -564,11 +616,11 @@ def resolve_article_metadata(publication_url: str, article_text: str,
             used.append("crossref")
         except (RuntimeError, ValueError) as exc:
             LOGGER.warning("Crossref не дал метаданные для %s: %s", doi, exc)
-    if not authors and expected_title:
+    if (not authors or not title) and expected_title:
         try:
             info = crossref_metadata_by_title(expected_title)
             title = title or info["topic"]
-            authors = info["article_authors"]
+            authors = authors or info["article_authors"]
             used.append("crossref-title")
         except (RuntimeError, ValueError, KeyError) as exc:
             LOGGER.warning("Поиск Crossref по названию не помог: %s", exc)
@@ -578,12 +630,12 @@ def resolve_article_metadata(publication_url: str, article_text: str,
         missing.append("название")
     if not authors:
         missing.append("авторы")
-    if missing:
+    if missing and not allow_partial:
         raise ValueError("Не удалось найти " + " и ".join(missing) +
                          " на сайте/в Crossref. Убедитесь, что в PDF есть DOI.")
-    return {"topic": title.strip(),
+    return {"topic": (title or UNKNOWN).strip(),
             "article_authors": list(dict.fromkeys(a.strip() for a in authors if a.strip())),
-            "metadata_source": "+".join(used)}
+            "metadata_source": "+".join(used) or UNKNOWN}
 
 
 MODEL_SCHEMA = {
@@ -769,19 +821,24 @@ def source_hash(row: SheetRow) -> str:
 
 
 def should_process(db: sqlite3.Connection, sheet_id: str, gid: str,
-                   row: SheetRow, model: str, force: bool) -> bool:
+                   row: SheetRow, model: str, force: bool, retry_incomplete: bool = False) -> bool:
     if force:
         return True
-    previous = db.execute("""SELECT source_hash, model, schema_version FROM annotations
+    previous = db.execute("""SELECT source_hash, model, schema_version, topic, article_authors_json, keywords_json FROM annotations
         WHERE sheet_id=? AND sheet_gid=? AND sheet_row=?""",
         (sheet_id, gid, row.number)).fetchone()
+    if retry_incomplete and previous is not None:
+        if (previous["topic"] in (None, "", UNKNOWN) or
+                previous["article_authors_json"] in ("[]", json.dumps([UNKNOWN], ensure_ascii=False)) or
+                previous["keywords_json"] in ("[]", json.dumps([UNKNOWN], ensure_ascii=False))):
+            return True
     return (previous is None or previous["source_hash"] != source_hash(row) or
             previous["model"] != model or previous["schema_version"] != SCHEMA_VERSION)
 
 
 def save_success(db: sqlite3.Connection, sheet_id: str, gid: str,
                  row: SheetRow, model: str, date: str, text: str,
-                 metadata: dict, keywords: list[str]) -> None:
+                 metadata: dict, keywords: list[str], *, raw_row: SheetRow | None = None) -> None:
     db.execute("""INSERT INTO annotations (
         sheet_id, sheet_gid, sheet_row, annotation_url, article_url, article_file_url,
         annotation_date, annotation_author, article_authors_json, topic,
@@ -801,7 +858,7 @@ def save_success(db: sqlite3.Connection, sheet_id: str, gid: str,
           date, row.annotation_author, json.dumps(metadata["article_authors"], ensure_ascii=False),
           metadata["topic"], metadata["metadata_source"], text,
           json.dumps(keywords, ensure_ascii=False),
-          source_hash(row), model, SCHEMA_VERSION,
+          source_hash(raw_row if raw_row is not None else row), model, SCHEMA_VERSION,
           datetime.now(timezone.utc).isoformat(timespec="seconds")))
     db.execute("DELETE FROM extraction_errors WHERE sheet_id=? AND sheet_gid=? AND sheet_row=?",
                (sheet_id, gid, row.number))
@@ -833,10 +890,126 @@ def save_error_safely(db: sqlite3.Connection, sheet_id: str, gid: str,
             raise
 
 
+def optional_url(value: str, number: int) -> str:
+    if not value.strip():
+        return ""
+    try:
+        return validate_url(value)
+    except ValueError as exc:
+        LOGGER.warning("Запись %d: ссылка не используется (%s)", number, exc)
+        return ""
+
+
+def process_yandex_annotation(db, sheet_id, gid, raw_row, model, ollama_url):
+    """TXT is the primary data; bibliography and AI enrichment are optional."""
+    annotation = raw_row.annotation_text.strip()
+    if not annotation or len(annotation) > MAX_ANNOTATION_CHARS:
+        raise ValueError("Пустая или слишком длинная аннотация")
+    validate_url(raw_row.annotation_url)
+    try:
+        date = parse_date(raw_row.date) if raw_row.date.strip() else ""
+    except ValueError as exc:
+        LOGGER.warning("Запись %d: %s; дата неизвестна", raw_row.number, exc)
+        date = ""
+    publication = optional_url(raw_row.article_url, raw_row.number)
+    file_url = optional_url(raw_row.article_file_url, raw_row.number) or publication
+    row = replace(raw_row, article_url=publication, article_file_url=file_url,
+                  annotation_author=raw_row.annotation_author or UNKNOWN)
+    article = annotation
+    if file_url:
+        try:
+            article = read_article(file_url, row.number).strip() or annotation
+        except Exception as exc:
+            LOGGER.warning("Запись %d: статья недоступна (%s); анализ по аннотации", row.number, exc)
+    try:
+        metadata = resolve_article_metadata(publication or file_url, article, row.article_title,
+                                            allow_partial=True)
+    except Exception as exc:
+        LOGGER.warning("Запись %d: метаданные недоступны (%s)", row.number, exc)
+        metadata = {"topic": row.article_title or UNKNOWN, "article_authors": [], "metadata_source": UNKNOWN}
+    metadata = dict(metadata)
+    metadata["topic"] = metadata.get("topic") or row.article_title or UNKNOWN
+    metadata["article_authors"] = metadata.get("article_authors") or []
+    metadata["metadata_source"] = metadata.get("metadata_source") or UNKNOWN
+    keywords = []
+    for text in (article, annotation) if article != annotation else (annotation,):
+        try:
+            keywords = ask_ollama(text, model, ollama_url, metadata["topic"])["keywords"]
+            if keywords:
+                break
+        except Exception as exc:
+            LOGGER.warning("Запись %d: ключевые слова не получены (%s)", row.number, exc)
+    # Do not discard previously successful enrichment on a retry of unchanged TXT.
+    previous = db.execute("""SELECT * FROM annotations WHERE sheet_id=? AND sheet_gid=? AND sheet_row=?""",
+                          (sheet_id, gid, row.number)).fetchone()
+    if previous is not None and previous["source_hash"] == source_hash(raw_row):
+        if metadata["topic"] == UNKNOWN and previous["topic"]:
+            metadata["topic"] = previous["topic"]
+        if not metadata["article_authors"]:
+            metadata["article_authors"] = json.loads(previous["article_authors_json"])
+        if not keywords:
+            keywords = json.loads(previous["keywords_json"])
+        if metadata["metadata_source"] == UNKNOWN and previous["metadata_source"]:
+            metadata["metadata_source"] = previous["metadata_source"]
+    metadata["article_authors"] = metadata["article_authors"] or [UNKNOWN]
+    keywords = keywords or [UNKNOWN]
+    save_success(db, sheet_id, gid, row, model, date, annotation, metadata, keywords, raw_row=raw_row)
+
+
+def process_annotation(db, sheet_id, gid, row, model, ollama_url, allow_empty_date=False):
+    if allow_empty_date:
+        return process_yandex_annotation(db, sheet_id, gid, row, model, ollama_url)
+    if not row.annotation_author:
+        raise ValueError("Не указан автор аннотации")
+    # In Yandex TXT mode, an omitted date is a valid empty string,
+    # never a guessed date, NULL, or numeric zero.
+    date = parse_date(row.date) if row.date.strip() else (
+        "" if allow_empty_date else parse_date(row.date)
+    )
+    if row.annotation_url:
+        validate_url(row.annotation_url)
+    validate_url(row.article_url)
+    validate_url(row.article_file_url)
+    if row.annotation_text:
+        annotation = row.annotation_text
+    else:
+        try:
+            annotation = download_document(row.annotation_url)
+        except Exception as exc:
+            raise RuntimeError(f"Аннотация (A{row.number}): {exc}") from exc
+    if len(annotation) > MAX_ANNOTATION_CHARS:
+        raise ValueError("Текст аннотации превышает лимит 150000 символов")
+    try:
+        article = read_article(row.article_file_url, row.number)
+    except Exception as exc:
+        if not row.annotation_text:
+            tip = (f" Если скачивание блокируется, помести PDF в папку "
+                   f"articles\\row_{row.number}.pdf рядом с main.py.")
+            raise RuntimeError(f"Файл статьи (C{row.number}): {exc}.{tip}") from exc
+        LOGGER.warning("Запись %d: полный текст статьи не получен (%s); "
+                       "ключевые слова будут по аннотации", row.number, exc)
+        article = annotation
+    try:
+        LOGGER.info("Строка %d: получаю авторов и название публикации", row.number)
+        if row.article_title:
+            metadata = resolve_article_metadata(row.article_url, article, row.article_title)
+        else:
+            metadata = resolve_article_metadata(row.article_url, article)
+    except Exception as exc:
+        raise RuntimeError(f"Библиография (B{row.number}): {exc}") from exc
+    LOGGER.info("Строка %d: метаданные найдены (%s)",
+                row.number, metadata["metadata_source"])
+    LOGGER.info("Строка %d: Ollama начинает полный анализ статьи (%d символов)",
+                row.number, len(article))
+    keywords = ask_ollama(article, model, ollama_url, metadata["topic"])["keywords"]
+    LOGGER.info("Строка %d: Ollama выделила %d ключевых слов", row.number, len(keywords))
+    save_success(db, sheet_id, gid, row, model, date, annotation, metadata, keywords)
+
+
 def run_once(db: sqlite3.Connection, sheet_id: str, gid: str,
              model: str, ollama_url: str, force: bool = False,
              public_csv: str | None = None,
-             yandex_url: str | None = None) -> tuple[int, int, int]:
+             yandex_url: str | None = None, retry_incomplete: bool = False) -> tuple[int, int, int]:
     success = skipped = errors = 0
     if yandex_url:
         def record_txt_error(filename: str, exc: Exception) -> None:
@@ -850,55 +1023,12 @@ def run_once(db: sqlite3.Connection, sheet_id: str, gid: str,
         text = public_csv if public_csv is not None else read_public_sheet(sheet_id, gid)
         items = parse_rows(text)
     for row in items:
-        if not should_process(db, sheet_id, gid, row, model, force):
+        if not should_process(db, sheet_id, gid, row, model, force, retry_incomplete):
             skipped += 1
             continue
-        LOGGER.info("Запись %d: обрабатываю", row.number)
+        LOGGER.info("Запись %d: обрабатываю (%s)", row.number, row.annotation_url)
         try:
-            if not row.annotation_author:
-                raise ValueError("Не указан автор аннотации")
-            # In Yandex TXT mode, an omitted date is a valid empty string,
-            # never a guessed date, NULL, or numeric zero.
-            date = parse_date(row.date) if row.date.strip() else (
-                "" if yandex_url else parse_date(row.date)
-            )
-            validate_url(row.annotation_url)
-            validate_url(row.article_url)
-            validate_url(row.article_file_url)
-            if row.annotation_text:
-                annotation = row.annotation_text
-            else:
-                try:
-                    annotation = download_document(row.annotation_url)
-                except Exception as exc:
-                    raise RuntimeError(f"Аннотация (A{row.number}): {exc}") from exc
-            if len(annotation) > MAX_ANNOTATION_CHARS:
-                raise ValueError("Текст аннотации превышает лимит 150000 символов")
-            try:
-                article = read_article(row.article_file_url, row.number)
-            except Exception as exc:
-                if not row.annotation_text:
-                    tip = (f" Если скачивание блокируется, помести PDF в папку "
-                           f"articles\\row_{row.number}.pdf рядом с main.py.")
-                    raise RuntimeError(f"Файл статьи (C{row.number}): {exc}.{tip}") from exc
-                LOGGER.warning("Запись %d: полный текст статьи не получен (%s); "
-                               "ключевые слова будут по аннотации", row.number, exc)
-                article = annotation
-            try:
-                LOGGER.info("Строка %d: получаю авторов и название публикации", row.number)
-                if row.article_title:
-                    metadata = resolve_article_metadata(row.article_url, article, row.article_title)
-                else:
-                    metadata = resolve_article_metadata(row.article_url, article)
-            except Exception as exc:
-                raise RuntimeError(f"Библиография (B{row.number}): {exc}") from exc
-            LOGGER.info("Строка %d: метаданные найдены (%s)",
-                        row.number, metadata["metadata_source"])
-            LOGGER.info("Строка %d: Ollama начинает полный анализ статьи (%d символов)",
-                        row.number, len(article))
-            keywords = ask_ollama(article, model, ollama_url, metadata["topic"])["keywords"]
-            LOGGER.info("Строка %d: Ollama выделила %d ключевых слов", row.number, len(keywords))
-            save_success(db, sheet_id, gid, row, model, date, annotation, metadata, keywords)
+            process_annotation(db, sheet_id, gid, row, model, ollama_url, bool(yandex_url))
             success += 1
             LOGGER.info("Строка %d: сохранена в SQLite", row.number)
         except Exception as exc:
@@ -929,8 +1059,10 @@ def main() -> int:
     from dotenv import load_dotenv
 
     load_dotenv(ROOT / ".env")
-    parser = argparse.ArgumentParser(description="Google Таблица → Ollama → SQLite")
+    parser = argparse.ArgumentParser(description="Яндекс Диск → Ollama → SQLite")
+    parser.add_argument("--scan", action="store_true", help="Показать список TXT на Яндекс Диске без запуска Ollama")
     parser.add_argument("--list", action="store_true", help="Вывести данные и ошибки из SQLite")
+    parser.add_argument("--retry-incomplete", action="store_true", help="Повторить поиск неизвестных авторов, названий и ключевых слов")
     parser.add_argument("--force", action="store_true", help="Обновить записи даже без изменения ссылок")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Повтор каждые N секунд")
     args = parser.parse_args()
@@ -943,14 +1075,21 @@ def main() -> int:
         if args.list:
             show_records(db)
             return 0
-        yandex_url = os.getenv("YANDEX_PUBLIC_URL", "").strip()
-        if yandex_url:
-            # Keep the old SQLite schema and identify the new source separately.
-            sheet_id = "yandex:" + hashlib.sha256(yandex_url.encode()).hexdigest()[:24]
-            gid = "txt"
-        else:
-            sheet_id, gid = parse_sheet_url(os.getenv("GOOGLE_SHEET_URL", DEFAULT_SHEET),
-                                           os.getenv("GOOGLE_SHEET_GID"))
+        try:
+            sheet_id, gid, yandex_url = configured_source()
+            LOGGER.info("Источник: %s; база: %s", yandex_url or "Google Таблица (явный режим)", db_path)
+            LOGGER.info("Записей по источникам: %s", [tuple(r) for r in db.execute("SELECT sheet_id, sheet_gid, COUNT(*) FROM annotations GROUP BY sheet_id, sheet_gid")])
+            if args.scan:
+                if not yandex_url:
+                    raise ValueError("--scan предназначен для Яндекс Диска")
+                _, files = list_yandex_txts(yandex_url)
+                for item in files:
+                    print(item.get("path") or item.get("name"))
+                print(f"Найдено TXT: {len(files)}")
+                return 0
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            LOGGER.error("%s", exc)
+            return 1
         model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
         if args.watch is not None and args.watch < 30:
@@ -959,7 +1098,7 @@ def main() -> int:
             while True:
                 try:
                     ok, skipped, bad = run_once(db, sheet_id, gid, model, ollama_url,
-                                                args.force, yandex_url=yandex_url or None)
+                                                args.force, yandex_url=yandex_url or None, retry_incomplete=args.retry_incomplete)
                     print(f"Готово: сохранено {ok}, пропущено {skipped}, ошибок {bad}. База: {db_path}")
                 except (ValueError, RuntimeError, PermissionError) as exc:
                     LOGGER.error("Не удалось получить исходные данные: %s", exc)
