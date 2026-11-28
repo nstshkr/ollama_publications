@@ -272,7 +272,7 @@ document.getElementById('save-note-btn').addEventListener('click', () => {
 });
 
 
-// --- ГЕНЕРАЦИЯ ПОСТА (ЭМУЛЯЦИЯ OLLAMA) ---
+// --- ГЕНЕРАЦИЯ ПОСТА (OLLAMA) ---
 let notesToGenerate = [];
 
 window.preparePostGeneration = function() {
@@ -290,19 +290,34 @@ window.generatePostsFromCurrentFolder = function() {
   startGeneration();
 };
 
-function startGeneration() {
-  document.getElementById('ollama-loading').classList.remove('d-none');
-  document.getElementById('ollama-result').classList.add('d-none');
+async function startGeneration() {
+  const texts = notesToGenerate.map(n => n.text).filter(t => t && t.trim());
+  if (!texts.length) return;
+  const loading = document.getElementById('ollama-loading');
+  const result = document.getElementById('ollama-result');
+  loading.classList.remove('d-none');
+  result.classList.add('d-none');
+  const researchQuery = document.getElementById('research-query').value.trim();
+  const researchStatus = document.getElementById('research-status');
+  researchStatus.classList.add('d-none');
+  researchStatus.textContent = '';
   ollamaModal.show();
-
-  setTimeout(() => {
-    const combinedText = notesToGenerate.map(n => n.text).join('. ');
-    document.getElementById('post-title').value = "Новый пост от " + new Date().toLocaleDateString();
-    document.getElementById('post-content').value = combinedText;
-    
-    document.getElementById('ollama-loading').classList.add('d-none');
-    document.getElementById('ollama-result').classList.remove('d-none');
-  }, 2000);
+  try {
+    const response = await fetch('/api/posts/generate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({notes: texts, research_query: researchQuery})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Ошибка генерации');
+    document.getElementById('post-title').value = data.title;
+    document.getElementById('post-content').value = data.content;
+    if (data.research_status) {
+      researchStatus.textContent = data.research_status;
+      researchStatus.classList.remove('d-none');
+    }
+    loading.classList.add('d-none');
+    result.classList.remove('d-none');
+  } catch (error) {
+    ollamaModal.hide();
+    alert(error.message);
+  }
 }
 
 window.cancelPost = function() {
@@ -310,14 +325,21 @@ window.cancelPost = function() {
   ollamaModal.hide();
 };
 
-document.getElementById('publish-post-btn').addEventListener('click', () => {
-  const title = document.getElementById('post-title').value.trim() || 'Без названия';
+document.getElementById('publish-post-btn').addEventListener('click', async () => {
+  const title = document.getElementById('post-title').value.trim();
   const content = document.getElementById('post-content').value.trim();
-  
-  const posts = JSON.parse(localStorage.getItem('my_posts')) || [];
-  posts.unshift({ id: Date.now(), title, content, date: new Date().toISOString() });
-  localStorage.setItem('my_posts', JSON.stringify(posts));
-
+  const button = document.getElementById('publish-post-btn');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/posts', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title, content})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Ошибка публикации');
+  } catch (error) {
+    alert(error.message);
+    return;
+  } finally {
+    button.disabled = false;
+  }
   selectedNotes.clear();
   updateActionBar();
   renderNotes();

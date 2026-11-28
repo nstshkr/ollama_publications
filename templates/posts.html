@@ -15,6 +15,20 @@
   <i class="bi bi-file-earmark-x display-4 opacity-50"></i>
   <p class="mt-3">У вас пока нет созданных постов. Перейдите в «Заметки» и создайте первый!</p>
 </div>
+<div class="modal fade" id="post-editor" tabindex="-1" aria-labelledby="editor-title" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable"><form id="edit-post-form" class="modal-content">
+    <div class="modal-header"><h2 class="modal-title h5" id="editor-title">Редактирование поста</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button></div>
+    <div class="modal-body">
+      <label class="form-label" for="edit-title">Заголовок</label><input class="form-control mb-3" id="edit-title" name="title" maxlength="500" required>
+      <label class="form-label" for="edit-content">Текст</label><textarea class="form-control mb-3" id="edit-content" name="content" rows="10" maxlength="150000" required></textarea>
+      <h3 class="h6">Вложения</h3><div id="existing-files"></div>
+      <label class="form-label" for="edit-files">Добавить картинки и файлы</label><input class="form-control mb-2" type="file" id="edit-files" name="files" multiple>
+      <div class="small text-muted mb-2">До 10 МиБ на файл, до 30 МиБ на пост. PNG, JPEG, GIF и WebP отображаются как изображения, прочие файлы скачиваются.</div>
+      <div id="new-files"></div><div id="edit-error" class="text-danger mt-2" role="alert"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button><button id="save-post" type="submit" class="btn btn-primary">Сохранить изменения</button></div>
+  </form></div>
+</div>
 {% endblock %}
 
 {% block scripts %}

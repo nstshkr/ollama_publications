@@ -23,6 +23,11 @@
       </button>
     </div>
 
+    <div class="mb-3">
+      <label for="research-query" class="form-label small text-muted">Дополнительный поиск научных источников (необязательно)</label>
+      <input id="research-query" type="search" maxlength="250" class="form-control" placeholder="Например: ROS2 dialogue management, LLM robotics">
+      <div class="form-text">Если заполнено, только эта поисковая фраза отправляется в Crossref. Сами заметки остаются в локальной Ollama при локальной настройке. Пустое поле — без интернет-поиска.</div>
+    </div>
     <div id="notes-grid" class="row g-3"></div>
     
     <div id="empty-notes" class="text-center py-5 d-none text-muted">
@@ -122,6 +127,7 @@
         </div>
         <div class="modal-body">
           <div class="alert alert-info py-2"><i class="bi bi-info-circle me-2"></i>Текст сгенерирован ИИ. Вы можете отредактировать его перед публикацией.</div>
+          <div id="research-status" class="alert alert-secondary py-2 d-none" role="status"></div>
           <div class="mb-3">
             <label class="form-label text-muted small">Заголовок</label>
             <input type="text" id="post-title" class="form-control fw-bold" placeholder="О чем этот пост?">

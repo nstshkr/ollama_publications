@@ -14,13 +14,13 @@
         <i class="bi bi-calendar3 me-1"></i>{{ article.annotation_date | ru_date }}
       </span>
       <span class="badge text-bg-light">
-        <i class="bi bi-person-circle me-1"></i>{{ article.annotation_author }}
+        <i class="bi bi-person-circle me-1"></i>{{ article.annotation_author or "Неизвестно" }}
       </span>
     </div>
-    <h1 class="fw-bold mb-2">{{ article.topic or "Без названия" }}</h1>
+    <h1 class="fw-bold mb-2">{{ article.topic or "Неизвестно" }}</h1>
     <p class="mb-0 opacity-75">
       <i class="bi bi-people me-1"></i>
-      {{ article.article_authors | join(", ") or "Авторы не указаны" }}
+      {{ article.article_authors | join(", ") or "Неизвестно" }}
     </p>
   </div>
 
@@ -31,24 +31,32 @@
     </div>
   </div>
 
-  {% if article.keywords %}
-  <div class="mb-4">
+    <div class="mb-4">
     <h2 class="h6 text-uppercase text-muted fw-semibold mb-2">Ключевые слова</h2>
-    {% for k in article.keywords %}<span class="badge keyword-badge me-1">{{ k }}</span>{% endfor %}
+    {% for k in article.keywords %}<span class="badge keyword-badge me-1">{{ k }}</span>{% else %}Неизвестно{% endfor %}
   </div>
-  {% endif %}
 
   <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
       <h2 class="h6 text-uppercase text-muted fw-semibold mb-3">Источники</h2>
       <div class="d-flex flex-wrap gap-2">
-        <a class="btn btn-primary" href="{{ article.article_url }}" target="_blank" rel="noopener">
+        <a class="btn btn-primary" href="{{ article.annotation_open_url }}" target="_blank" rel="noopener noreferrer">
+          <i class="bi bi-box-arrow-up-right me-1"></i>Посмотреть аннотацию
+        </a>
+        {% if article.disk_url and not article.disk_is_annotation %}
+        <a class="btn btn-outline-secondary" href="{{ article.disk_url }}" target="_blank" rel="noopener noreferrer">Файл статьи на Диске</a>
+        {% endif %}
+        {% if article.article_url %}
+        <a class="btn btn-outline-primary" href="{{ article.article_url }}" target="_blank" rel="noopener">
           <i class="bi bi-file-earmark-text me-1"></i>Оригинальная статья
         </a>
-        <a class="btn btn-outline-secondary" href="{{ article.annotation_url }}" target="_blank" rel="noopener">
-          <i class="bi bi-journal-text me-1"></i>Аннотация в Google Docs
-        </a>
+        {% else %}
+        <span class="text-muted align-self-center">Ссылка на статью: Неизвестно</span>
+        {% endif %}
       </div>
+      {% if request.args.get('disk_unavailable') %}
+      <p class="alert alert-warning mt-3 mb-0">Файл аннотации на Яндекс Диске недоступен или ссылка не ведёт к отдельному файлу. Выше показана сохранённая копия аннотации из базы.</p>
+      {% endif %}
     </div>
   </div>
 </div>

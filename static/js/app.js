@@ -73,7 +73,7 @@ function safeHref(url) {
 }
 
 function formatDate(iso) {
-  if (!iso) return "";
+  if (!iso) return "Неизвестно";
   const p = iso.split("-");
   if (p.length !== 3) return iso;
   const [y, m, d] = p.map(Number);
@@ -88,6 +88,8 @@ function truncate(s, n) {
 
 function renderCard(a) {
   const authors = (a.article_authors || []).join(", ");
+  const isPost = a.kind === "post";
+  const detail = isPost ? `/publication/${Number(a.post_id)}` : `/article/${encodeURIComponent(a.sheet_row)}`;
   const keywords = (a.keywords || []).slice(0, 5)
     .map((k) => `<span class="badge keyword-badge">${escapeHtml(k)}</span>`).join(" ");
 
@@ -100,23 +102,25 @@ function renderCard(a) {
               <i class="bi bi-calendar3 me-1 text-muted"></i>${escapeHtml(formatDate(a.annotation_date))}
             </span>
             <span class="author-chip" title="Автор аннотации">
-              <i class="bi bi-person-circle me-1"></i>${escapeHtml(a.annotation_author)}
+              <i class="bi bi-person-circle me-1"></i>${escapeHtml(a.annotation_author || "Неизвестно")}
             </span>
           </div>
-          <h3 class="h5 card-title mb-2 text-dark">${escapeHtml(a.topic || "Без названия")}</h3>
+          ${isPost && a.cover_url ? `<img class="publication-cover rounded mb-3" loading="lazy" src="${escapeHtml(a.cover_url)}" alt="Иллюстрация статьи">` : ''}
+          <h3 class="h5 card-title mb-2 text-dark">${escapeHtml(a.topic || "Неизвестно")}</h3>
           <p class="text-muted small mb-2">
-            <i class="bi bi-people me-1"></i>${escapeHtml(authors || "Авторы не указаны")}
+            <i class="bi bi-people me-1"></i>${escapeHtml(isPost ? "Авторская публикация" : (authors || "Неизвестно"))}
           </p>
           <p class="card-text flex-grow-1">${escapeHtml(truncate(a.annotation_text, 240))}</p>
           <div class="mb-3">${keywords}</div>
           <div class="d-flex justify-content-between align-items-center mt-auto pt-2 border-top">
-            <a href="/article/${a.sheet_row}" class="btn btn-sm btn-primary stretched-link px-3 rounded-pill">
+            <a href="${detail}" class="btn btn-sm btn-primary stretched-link px-3 rounded-pill">
               Читать <i class="bi bi-arrow-right ms-1"></i>
             </a>
-            <a href="${safeHref(a.article_url)}" target="_blank" rel="noopener"
-               class="btn btn-sm btn-outline-secondary position-relative rounded-pill" style="z-index:2">
-              <i class="bi bi-box-arrow-up-right me-1"></i>Источник
-            </a>
+            ${isPost ? `<span class="small text-muted">Вложений: ${(a.attachments || []).length}</span>` : `<a href="${detail}/annotation" target="_blank" rel="noopener noreferrer"
+               class="btn btn-sm btn-outline-secondary position-relative rounded-pill" style="z-index:2"
+               title="Открыть конкретную аннотацию">
+              <i class="bi bi-box-arrow-up-right me-1"></i>Посмотреть аннотацию
+            </a>`}
           </div>
         </div>
       </article>
