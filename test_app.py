@@ -37,14 +37,11 @@ class SiteTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp.name) / "test.db"
         create_test_db(self.db_path)
-        from unittest.mock import patch
-        self.env = patch.dict(os.environ, {"DB_PATH": str(self.db_path), "IMPORT_SOURCE": "google", "GOOGLE_SHEET_URL": "https://docs.google.com/spreadsheets/d/sheet1/edit", "GOOGLE_SHEET_GID": "0"})
-        self.env.start()
+        os.environ["DB_PATH"] = str(self.db_path)
         app_module.app.config.update(TESTING=True)
         self.client = app_module.app.test_client()
 
     def tearDown(self):
-        self.env.stop()
         self.temp.cleanup()
 
     def test_index_ok(self):
